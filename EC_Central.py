@@ -14,23 +14,7 @@ IP_kafka = None
 PORT_kafka = None
 consumer = None
 producer = None
-def get_local_ip():
-    # Crea un socket temporal y se conecta a una dirección externa
-    # Esto ayuda a determinar cuál es la IP de salida del sistema
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # No envía datos reales, solo se conecta a una IP pública de ejemplo para obtener la IP local
-        s.connect(("8.8.8.8", 80))
-        ip_address = s.getsockname()[0]
-    except Exception:
-        ip_address = "127.0.0.1"  # Fallback a localhost en caso de error
-    finally:
-        s.close()
-    return ip_address
-
-# Usar esta IP en tu configuración de socket
-SERVER = get_local_ip()
-print(f"Servidor configurado para la IP local: {SERVER}")
+SERVER = socket.gethostbyname(socket.gethostname())  # dirección IP de la máquina
 FORMAT = 'utf-8'
 MAX_CONEXIONES = 2  # limita el número de conexiones simultáneas
 offset_taxi_end = -1

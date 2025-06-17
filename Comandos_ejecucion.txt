@@ -38,4 +38,4 @@ MÁQUINA 3 (Customer):
 python3 EC_Central.py 2222 172.21.42.18 9092 taxis_db.json
 
 
-
+python3 EC_DE.py 172.21.42.18 2222 172.21.42.18 9092 172.21.42.17 8888 1
