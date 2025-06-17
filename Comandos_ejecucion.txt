@@ -1,0 +1,20 @@
+MÁQUINA 1 (KAFKA Y CENTRAL):
+1.cambiar en server.properties 
+listeners=PLAINTEXT://<IP de Máquina 1>:9092
+advertised.listeners=PLAINTEXT://<IP de Máquina 1>:9092
+2.Iniciar zookeeper y server de Kafka: 
+bin/zookeeper-server-start.sh config/zookeeper.properties
+bin/kafka-server-start.sh config/server.properties
+3.Ejecutar central:
+python3 EC_Central.py 2222(puerto de escucha) <IP de Máquina 1>:9092 taxis_db.json
+
+
+MÁQUINA 2 (TAXIS: DE y S):
+1.Instalar librerias necesarias: sudo apt-get install python3 python3-pip; pip3 install kafka-python pygame etc.
+2.Iniciar los DE: python3 EC_DE.py <IP de Máquina 1> 2222 <IP de Máquina 2> 8888 1(ID TAXI) <IP de Máquina 1> 9092
+3.Iniciar los S:  python3 EC_S.py <IP de Máquina 2> 8888
+
+
+MÁQUINA 3 (Customer):
+1. Iniciar los clientes: python3 EC_Customer.py <IP de Máquina 1>:9092 a
+
