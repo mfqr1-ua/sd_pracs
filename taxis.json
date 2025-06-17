@@ -1,14 +1,44 @@
-{ 
-    "taxis":[
-        { 
-            "Id":"0"
+[
+    {
+        "id": 1,
+        "coordenada_origen": {
+            "x": 8,
+            "y": 6
         },
-        {
-            "Id":"1" 
-            
+        "coordenada_destino": {
+            "x": null,
+            "y": null,
+            "id": ""
         },
-        {
-            "Id":"2" 
+        "estado": "verde",
+        "disponible": true,
+        "verificado": true,
+        "recogido": false,
+        "cliente": {
+            "id_cliente": "",
+            "x": null,
+            "y": null
         }
-    ]  
-}
+    },
+    {
+        "id": 2,
+        "coordenada_origen": {
+            "x": 8,
+            "y": 6
+        },
+        "coordenada_destino": {
+            "x": null,
+            "y": null,
+            "id": ""
+        },
+        "estado": "verde",
+        "disponible": true,
+        "verificado": true,
+        "recogido": false,
+        "cliente": {
+            "id_cliente": "",
+            "x": null,
+            "y": null
+        }
+    }
+]
