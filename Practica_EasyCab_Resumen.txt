@@ -1,0 +1,102 @@
+
+TÍTULO: Práctica EasyCab – Curso 24/25 (Release 1)
+
+OBJETIVO:
+Simulación distribuida de gestión de taxis autónomos, usando sockets y tecnologías de streaming de eventos (como Kafka), modularidad, y despliegue en entorno distribuido.
+
+PREÁMBULO:
+- Comunicación basada en sockets.
+- Streaming de eventos como solución resiliente y desacoplada.
+- Progresiva ampliación de la práctica durante el cuatrimestre.
+
+FUNCIONALIDAD:
+Aplicación: “EasyCab” – Gestión de flota de taxis autónomos en una ciudad ficticia (20x20).
+
+MAPA (Representación de la ciudad):
+- Matriz 2D de 20x20.
+- Contenido posible:
+  1. Taxi (número, color: verde = moviéndose, rojo = parado)
+  2. Localizaciones destino (carácter mayúscula, fondo azul)
+  3. Cliente (carácter minúscula, fondo amarillo)
+  4. Nada (celda vacía)
+- Topología: mapa esférico (bordes conectados entre sí)
+- Imagen simulada: taxis + clientes + localizaciones
+
+COMPONENTES PRINCIPALES:
+- CENTRAL: Controla toda la lógica, recibe peticiones, gestiona mapa, reparte taxis.
+- TAXI (aplicación distribuida con dos módulos):
+  - EC_DE (Digital Engine): ejecuta lógica del taxi, recibe del CENTRAL y sensores.
+  - EC_S (Sensores): envía cada segundo estado OK/KO, simulable con pulsación de tecla.
+- EC_CUSTOMER: Cliente que solicita servicios con fichero de destinos.
+
+MECÁNICA DE FUNCIONAMIENTO (secuencia):
+1. CENTRAL lee mapa desde fichero: <ID_LOCALIZACION><X><Y>
+2. CENTRAL carga taxis desde BD o fichero.
+3. EC_CUSTOMER solicita servicios desde fichero: <ID_LOCALIZACION>
+4. CENTRAL asigna taxi disponible y notifica cliente (OK/KO).
+5. Taxi se mueve y actualiza su posición (estado RUN = verde).
+6. Sensores informan cada segundo (OK o KO):
+   - Si KO → taxi se para, CENTRAL es notificada.
+   - Si OK → taxi continúa.
+7. CENTRAL actualiza y reenvía el mapa a todos los taxis.
+8. Al llegar a destino → estado END (color rojo).
+9. Si cliente tiene más destinos, espera 4s y solicita otro.
+10. CENTRAL puede forzar acciones a cualquier taxi:
+    a. Parar
+    b. Reanudar
+    c. Cambiar destino
+    d. Volver a base ([1,1])
+
+MOVIMIENTO TAXIS:
+- Coordenadas iniciales: [1,1]
+- Movimiento libre en 8 direcciones (N, S, E, W, NW, NE, SW, SE)
+- Asíncrono y dinámico
+- Fallos → taxi desaparece visualmente
+- Recuperación → autenticación y reinicio
+
+DISEÑO TÉCNICO (ver diagrama conceptual):
+- Componentes:
+  - CENTRAL (EC_Central)
+  - TAXI: EC_DE + EC_S
+  - EC_CUSTOMER
+- Lenguaje libre: Java, C/C++, Python, .NET, etc.
+- Sistema de colas: Apache Kafka
+- BD recomendadas: SQLite, MySQL, SQLServer, MongoDB (o fichero)
+
+ESPECIFICACIÓN DE EJECUCIÓN:
+- EC_Central: EC_Central <puerto> <IP:puerto Kafka> [IP:puerto BBDD]
+- EC_DE: EC_DE <IP:puerto EC_Central> <IP:puerto Kafka> <IP:puerto EC_S> <ID taxi>
+- EC_S: EC_S <IP:puerto EC_DE>
+- EC_Customer: EC_Customer <IP:puerto Kafka> <ID cliente>
+
+PROTOCOLO DE COMUNICACIÓN (SOLO SOCKETS):
+Recomendado: <STX><DATA><ETX><LRC>, donde:
+- <REQUEST>/<ANSWER>: texto con campos separados (ej. OPCODE#campo1#campo2)
+- <LRC> = XOR de bytes del mensaje
+- Receptor responde con <ACK> o <NACK> tras validación
+
+DESPLIEGUE MÍNIMO (ver imagen de red):
+- Mínimo 3 PCs:
+  - PC1 → EC_Customer
+  - PC2 → EC_Central
+  - PC3 → EC_DE y EC_S
+- Kafka debe estar disponible
+- Docker recomendable
+
+ENTREGABLES:
+- Evaluación presencial en laboratorio
+- Sistema completo y funcional desplegado por los estudiantes
+- Documento entregable:
+  - Portada (nombre, DNI, título)
+  - Descripción de componentes + código fuente
+  - Guía de despliegue paso a paso
+  - Capturas del funcionamiento del sistema
+- Guía de corrección cumplimentada
+- Fecha de entrega: semana del 21/10/2024
+
+IMÁGENES EN EL PDF (describir para IA):
+- Imagen 1: “Flota de taxis autónomos en China” → mostrar taxis sin conductor alineados en ciudad.
+- Figura 1: “Ejemplo de mapa” → matriz 20x20 con taxis (números), clientes (letras minúsculas), localizaciones (letras mayúsculas), colores según estado.
+- Figura 2: “Servicios en curso” → vista de taxis moviéndose por el mapa.
+- Figura 3: “Arquitectura conceptual del Sistema” → diagrama con módulos: EC_Central, EC_DE, EC_S, EC_Customer, Kafka; conectados entre sí.
+- Figura 4: “Escenario físico mínimo” → esquema con 3 PCs y sus respectivos módulos.
