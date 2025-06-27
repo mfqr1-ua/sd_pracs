@@ -1,149 +1,99 @@
+import socket
+import json
+import time
 import sys
-from confluent_kafka import Producer, Consumer, KafkaError 
-import time 
+import threading
+from kafka import KafkaProducer, KafkaConsumer
 
-last_offset = -1
-last_offset_taxi_end = -1
-##########  MAIN  #########
 
-#leer el fichero de los servicios 
-def read_services(file):
-    with open(file, 'r') as f:
-        services = f.readlines()
-    return [s.strip() for s in services]
+TOPIC_SOLICITUDES_TAXIS = 'solicitudes-taxis' 
+TOPIC_RESPUESTAS_TAXIS = 'respuestas-taxis' 
+TOPIC_TAXI_END_CLIENT = 'taxi-end-client'  
 
-def recibir_respuesta(consumer, ID_customer):
-    global last_offset
+class ECCustomer:
+    def __init__(self, kafka_ip_port, customer_id, destinations_file):
+        self.kafka_ip_port = kafka_ip_port
+        self.customer_id = customer_id
+        self.destinations = self.load_destinations(destinations_file)
+        self.current_destination_index = 0
+        self.last_offset = -1
+        self.last_offset_taxi_end = -1
+
+        self.producer = KafkaProducer(
+            bootstrap_servers=self.kafka_ip_port,
+            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+        )
+        self.consumer = KafkaConsumer(
+            bootstrap_servers=kafka_ip_port,
+            group_id=f"grupo_{self.customer_id}",
+            value_deserializer=lambda v: json.loads(v.decode('utf-8'))
+        )
+        self.consumer.subscribe(topics=[TOPIC_RESPUESTAS_TAXIS, TOPIC_TAXI_END_CLIENT])
     
-    while True:
-        msg = consumer.poll(timeout=0.5)
-        
-        
-        if msg is None:
-            continue
-        if msg.error():
-            if msg.error().code() == KafkaError._PARTITION_EOF:
-                continue
-            else:
-                print(msg.error())
-                return None #error demasiado critico que requiere parar la ejecución 
-        if msg.offset() > last_offset:
-            
-            mensaje = msg.value().decode('utf-8')
-            id, confirmacion = mensaje.split(": ")
-            if ID_customer == id:
-                print(f"Procesando mensaje: {mensaje} con offset {msg.offset()}")
-                # Actualizar el último offset procesado
-                last_offset = msg.offset()
-                # Confirmar manualmente el offset
-                consumer.commit(asynchronous=False)
-                return mensaje
-            else:
-                continue
 
+    def handle_response(self):
+        """Recibe la respuesta de la central para el cliente a través de Kafka."""
+        for msg in self.consumer:
+            if msg is None:
+                continue
+            if msg.topic == TOPIC_RESPUESTAS_TAXIS:
+                mensaje = msg.value
+                clientID, aux = mensaje.split(": ")
+                if self.customer_id == clientID:
+                    print(f"Processing msg: {mensaje} with offset {msg.offset}")
+                    return mensaje
                 
+    
+    def load_destinations(self, filename):
+        """Carga la lista de destinos desde un archivo."""
+        with open(filename, 'r') as file:
+            data = json.load(file)
+            return [request['Id'] for request in data['Requests']]
 
-        else: 
-            print(f"Ignorando mensaje antiguo con offset {msg.offset()}")
-        
 
+    def request_taxi(self, destination):
+        """Envía una solicitud de taxi con origen y destino a través de Kafka."""
+        message = f"{self.customer_id} solicita {destination}"
+        self.producer.send(TOPIC_SOLICITUDES_TAXIS, value=message)
 
-
-#solicitud para producir mensajes en kafka 
-def send_request(producer, service, customer_id):
-    message = f"{customer_id} solicita {service}" # aqui PASARLE LA COORDENADA ORIGEN, DESTINO 
-    producer.produce('service', message.encode('utf-8')) #topic name = service 
-    producer.flush() #para que no se produzcan envios por lotes 
-
-def esperar_llegada_taxi(consumer, ID_customer):
-    global last_offset_taxi_end
-    while True:
-        print("HE ENTRADO A ESCUCHAR")
-        msg = consumer.poll(timeout=0.5)
-        
-        if msg is None:
-            continue
-        if msg.error():
-            if msg.error().code() == KafkaError._PARTITION_EOF:
+    def wait_arrival(self):
+        print("LISTENING")
+        for msg in self.consumer:
+            if msg is None:
                 continue
-            else:
-                print(msg.error())
-                return None #error demasiado critico que requiere parar la ejecución 
+            if msg.topic == TOPIC_TAXI_END_CLIENT:
+                mensaje = msg.value
+                print(f'THE MSG IS {mensaje}')
+                mensajes = mensaje.split('#')
+                if len(mensajes) >= 4:
+                    client_id = mensajes[3]
+                    if self.customer_id == client_id:
+                        return "You have arrived at your destination"
+
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        print("PARÁMETROS INCORRECTOS USAGE: EC_Customer <KAFKA_IP_PORT> <CUSTOMER_ID> <REQUESTS FILE>")
+        sys.exit(1)
     
-        if msg.offset() > last_offset_taxi_end:
-            
-            mensaje = msg.value().decode('utf-8')
-            print(f'EL MENSAJE ES {mensaje}')
-            print(f"el mensaje es {mensaje}")
-            last_offset_taxi_end = msg.offset()
-            #FORMATO mensaje TAXI --> f"taxi#taxi_id#cliente#cliente#ha llegado a su destino"
-            # Extraemos taxi_id y cliente usando split y strip
-            # Encuentra las posiciones de las llaves
-            mensajes = mensaje.split('#') 
-            taxi_id = mensajes[1]
-            cliente_id = mensajes[3]
+    kafka_ip_port = sys.argv[1]
+    customer_id = sys.argv[2]
+    destinations_file = sys.argv[3]
+
+    customer = ECCustomer(kafka_ip_port, customer_id, destinations_file)
+    
+    for destination in customer.destinations:
+        print()
+        print(f"Sending request to go to destination: {destination}")
+        customer.request_taxi(destination)
+        print()
+        response = customer.handle_response()
+        responseID, allOK = response.split(': ')
+        print(f"RECIEVED Response for service with destination {destination} : {allOK}")
         
-            if ID_customer == cliente_id:
-                return "has llegado a tu destino"
-            else:
-                continue
+        if allOK == 'OK':
+           taxi_response = customer.wait_arrival()
+           print()
+           print(taxi_response)
         else:
-            continue
-                
-
-        
-
-
-######################### MAIN #######################
-if(len(sys.argv) == 5):
-    IP_kafka = sys.argv[1] 
-    PORT_kafka = sys.argv[2] 
-    ID_customer = sys.argv[3]
-    Services_File = sys.argv[4]
-
-    #Configuración de EC_Customer 
-    kafka_server = f"{IP_kafka}:{PORT_kafka}" #puerto e ip de kafka 
-    producer_conf = {'bootstrap.servers': kafka_server}
-    consumer_conf = {
-        'bootstrap.servers': kafka_server,
-        'group.id': f'grupo_{ID_customer}',
-        'auto.offset.reset': 'latest'
-
-    }
-    
-
-    producer = Producer(producer_conf)
-    consumer = Consumer(consumer_conf)
-    consumer.subscribe(['central_replay']) #el customer se suscribe al topic de central donde se le responde la solicitud 
-    consumer_taxi = Consumer(consumer_conf)
-    consumer_taxi.subscribe(['taxi_end'])
-    services = read_services(Services_File)
-
-    for service in services: #Para cada uno de los servicios que el cliente quiere y se encuentran en el archivo...
-        print('                                                 ')
-        print(f"Enviando solicitud para ir al destino: {service}")
-        send_request(producer, service, ID_customer) # producimos un mensaje en kafka con el servicio requerido 
-
-        # Esperar la respuesta de la central
-        print('                               ')
-        respuesta = recibir_respuesta(consumer, ID_customer)
-        id_respuesta, confirmacion = respuesta.split(': ')
-      
-        print(f"Respuesta recibida para el servicio con destino {service} : {confirmacion}")
-        if confirmacion == 'OK':
-        
-           respuesta_taxi = esperar_llegada_taxi(consumer_taxi, ID_customer)
-           print('                           ')
-           print(respuesta_taxi)
-        else:
-            print('no se recibio confirmacion')
-        
-    
-
-        # Esperar 4 segundos antes de la siguiente solicitud
+            print('no se ha recibido confirmación')
         time.sleep(4)
-
-else:
-    print("Formato: python EC_Customer.py <IP_kafka> <Port_kafka> <ID_customer> servicesCustomer1.json")
-
-    

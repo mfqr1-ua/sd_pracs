@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapa de Taxis</title>
+    <style>
+        .grid line {
+            stroke: black;
+            stroke-width: 0.5px;
+        }
+        .grid path {
+            stroke: none;
+        }
+        .taxi-verde {
+            fill: green;
+        }
+        .taxi-rojo {
+            fill: red;
+        }
+        .location-client {
+            fill: yellow;
+        }
+        .location-destination {
+            fill: blue;
+        }
+    </style>
+</head>
+<body>
+    <h1>Mapa de Taxis</h1>
+    <svg id="map" width="500" height="500"></svg>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <script>
+        const size = 20;
+        const cellSize = 20;
+
+        async function loadMap() {
+            const mapData = await fetch('/get_map').then(res => res.json());
+            const taxiData = await fetch('/get_taxis').then(res => res.json());
+            
+            const svg = d3.select("#map");
+            svg.selectAll("*").remove();
+
+            // Draw grid
+            svg.append("g")
+                .selectAll("line")
+                .data(d3.range(size + 1))
+                .enter()
+                .append("line")
+                .attr("x1", 0)
+                .attr("y1", d => d * cellSize)
+                .attr("x2", size * cellSize)
+                .attr("y2", d => d * cellSize)
+                .style("stroke", "black");
+
+            svg.append("g")
+                .selectAll("line")
+                .data(d3.range(size + 1))
+                .enter()
+                .append("line")
+                .attr("x1", d => d * cellSize)
+                .attr("y1", 0)
+                .attr("x2", d * cellSize)
+                .attr("y2", size * cellSize)
+                .style("stroke", "black");
+
+            // Add map locations
+            for (const [key, pos] of Object.entries(mapData)) {
+                const x = (pos[0] - 1) * cellSize;
+                const y = (pos[1] - 1) * cellSize;
+                const colorClass = key === key.toLowerCase() ? "location-client" : "location-destination";
+
+                svg.append("rect")
+                    .attr("x", x)
+                    .attr("y", y)
+                    .attr("width", cellSize)
+                    .attr("height", cellSize)
+                    .attr("class", colorClass);
+
+                svg.append("text")
+                    .attr("x", x + cellSize / 2)
+                    .attr("y", y + cellSize / 2)
+                    .attr("dy", ".35em")
+                    .style("text-anchor", "middle")
+                    .text(key);
+            }
+
+            // Add taxis
+            taxiData.forEach(taxi => {
+                const x = (taxi.coordenada_origen.x - 1) * cellSize;
+                const y = (taxi.coordenada_origen.y - 1) * cellSize;
+
+                const taxiClass = taxi.estado === 'rojo' ? 'taxi-rojo' : 'taxi-verde';
+
+                svg.append("circle")
+                    .attr("cx", x + cellSize / 2)
+                    .attr("cy", y + cellSize / 2)
+                    .attr("r", cellSize / 4)
+                    .attr("class", taxiClass);
+
+                svg.append("text")
+                    .attr("x", x + cellSize / 2)
+                    .attr("y", y + cellSize / 2)
+                    .attr("dy", ".35em")
+                    .style("text-anchor", "middle")
+                    .style("fill", "white")
+                    .text(taxi.id);
+            });
+        }
+
+        loadMap();
+        setInterval(loadMap, 1000);
+    </script>
+</body>
+</html>

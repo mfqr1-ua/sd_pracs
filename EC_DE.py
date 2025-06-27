@@ -1,252 +1,345 @@
 import socket
 import sys
 import threading
-import time
 import re
-from confluent_kafka import Producer, Consumer, KafkaException
-HEADER = 64
-PORT = 5050 #puerto al que se conectará el cliente, debe coincidir con el del servidor 
+import time
+import json
+from kafka import KafkaConsumer, KafkaProducer
+import urllib3
+import os
+import requests
+from PyInquirer import prompt
+import ssl
+import certifi
+from cryptography.fernet import Fernet
+from dotenv import load_dotenv
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+TOPIC_TAXI_UPDATES = 'taxi_updates' 
+TOPIC_ASIGNACION_TAXIS = 'asignacion-taxis' 
+TOPIC_TAXI_END_CLIENT = 'taxi-end-client' 
+TOPIC_TAXI_END_CENTRAL = 'taxi-end-central' 
 FORMAT = 'utf-8'
-FIN = "FIN"
-coordenadax = 1
-coordenaday = 1
-destinox = 1
-destinoy = 1
-clientex =1
-clientey = 1
-recogido = False
-ordenado = False
-llegado = False
-cliente = ''
+HEADER = 64
 
+# Cargar variables de entorno desde .env
+load_dotenv()
 
-def send(msg, client):
-    message = msg.encode(FORMAT)
-    msg_length = len(message)
-    send_length = str(msg_length).encode(FORMAT)
-    send_length += b' ' * (HEADER - len(send_length))
-    client.send(send_length)
-    client.send(message)
+def create_ssl_context(cert_path):
+    """Create SSL context with certificate validation"""
+    context = ssl.create_default_context(cafile=cert_path)
+    return context
 
-# Función para enviar mensaje a Kafka usando Confluent Producer
-def send_to_kafka(producer, topic, message):
+def register_taxi(taxi_id, registry_url, cert_path):
     try:
-        producer.produce(topic, message.encode('utf-8'))
-        producer.flush()
-        print(f"Mensaje enviado a Kafka: {message}")
-    except KafkaException as e:
-        print(f"Error al enviar mensaje a Kafka: {e}")
+        context = create_ssl_context(cert_path)
+        response = requests.put(
+            f"{registry_url}/register_taxi",
+            json={"id": int(taxi_id)},
+            verify=cert_path,  # Use certificate for verification
+            headers={'Content-Type': 'application/json'}
+        )
+        print(response.json())
+        return response.status_code == 201
+    except Exception as e:
+        print(f"Error registering taxi: {e}")
+        return False
 
-#funcion para actualizar coordenada del cliente
-def actualizar_coordenadacliente(cordix, cordiy):
-    if cordix < clientex:
-         cordix+= 1
-    elif cordix > clientex:
-        cordix -= 1
-    elif cordiy < clientey:
-        cordiy += 1
-    elif cordiy > clientey:
-        cordiy -= 1
-    print(f"{cordix, cordiy}")
-    return cordix, cordiy
+def deregister_taxi(taxi_id, registry_url, cert_path):
+    try:
+        context = create_ssl_context(cert_path)
+        response = requests.delete(
+            f"{registry_url}/deregister_taxi/{taxi_id}",
+            verify=cert_path,
+            headers={'Content-Type': 'application/json'}
+        )
+        print(response.json())
+        return response.status_code == 200
+    except Exception as e:
+        print(f"Error deregistering taxi: {e}")
+        return False
 
-def actualizar_coordenadadestino():
-    global coordenadax, clientex, clientey, destinox, destinoy, coordenaday
-    if coordenadax < destinox:
-         coordenadax += 1
-    elif coordenadax > destinox:
-        coordenadax -= 1
-    elif coordenaday < destinoy:
-        coordenaday += 1
-    elif coordenaday > destinoy:
-        coordenaday -= 1
-    print(f"{coordenadax, coordenaday}")
+def show_registry_menu(taxi_id, registry_url, cert_path):
+    questions = [
+        {
+            'type': 'list',
+            'name': 'action',
+            'message': 'What would you like to do?',
+            'choices': [
+                'Register Taxi',
+                'Deregister Taxi', 
+                'Continue without changes'
+            ]
+        }
+    ]
+    
+    action = prompt(questions)['action']
+    
+    if action == 'Register Taxi':
+        if register_taxi(taxi_id, registry_url, cert_path):
+            return True
+        sys.exit(1)
+    elif action == 'Deregister Taxi':
+        if deregister_taxi(taxi_id, registry_url, cert_path):
+            sys.exit(0)
+        sys.exit(1)
+    return True
 
 
-# Función para recibir mensajes de EC_S (sensor)
-def listen_to_sensor(sensor_socket, producer, producer_servicio_completado, kafka_topic_status, taxi_id):
-    global coordenaday, recogido, ordenado, llegado
-    global coordenadax, clientex, clientey
-    avanzado = False
-    while True:
+class DigitalEngine:
+    def __init__(self, ec_central_ip, ec_central_port, kafka_ip_port, ec_de_port, taxi_id, registry_ip, registry_port, cert_path):
+        # Add certificate path
+        self.cert_path = cert_path
+        self.registry_url = f"https://{registry_ip}:{registry_port}"
+        self.ec_central_addr = (ec_central_ip, ec_central_port)
+        self.kafka_ip_port = kafka_ip_port
+        self.de_addr = (socket.gethostbyname(socket.gethostname()), int(ec_de_port))
+        self.taxi_id = taxi_id
+        self.status = "OK"
+        self.position = [1, 1]
+        self.client_position = [1, 1]
+        self.goal_position = [1, 1]
+        self.available = True
+        self.inTaxi = False
+        self.ordered = False
+        self.arrived = False
+        self.client_id = ''
+        self.producer = KafkaProducer(bootstrap_servers=kafka_ip_port, value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+        self.sensor_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.producer_end = KafkaProducer(bootstrap_servers=kafka_ip_port, value_serializer=lambda v: json.dumps(v).encode('utf-8'))       
+        self.consumer = KafkaConsumer(
+            TOPIC_ASIGNACION_TAXIS,
+            bootstrap_servers=kafka_ip_port,
+            group_id=f"taxi_{self.taxi_id}",
+            auto_offset_reset='latest',
+            value_deserializer=lambda v: json.loads(v.decode('utf-8'))
+        )
+        self.returning_to_base = False  # Indica si el taxi está regresando a la base
+
+
+    def send(self, msg, client):
+        message = msg.encode(FORMAT)
+        msg_length = len(message)
+        send_length = str(msg_length).encode(FORMAT)
+        send_length += b' ' * (HEADER - len(send_length))
+        client.send(send_length)
+        client.send(message)
+
+    def send_to_kafka(self, topic, message):
         try:
-            mensaje = sensor_socket.recv(1024).decode('utf-8')
-            if mensaje:
-                #print(f"Mensaje recibido de Sensor: {message}")
-                # Enviar el mensaje recibido del sensor a Kafka
-                #send_to_kafka(producer, kafka_topic_status, f"{taxi_id}#RUN#Taxi en movimiento")
-                if mensaje == "KO":
-                    send_to_kafka(producer, kafka_topic_status, f"{taxi_id}#{mensaje}#{coordenadax}#{coordenaday}")
-                    continue
-                if coordenadax == clientex and coordenaday == clientey and ordenado:
-                    recogido = True
-                if recogido == False:
-                    print(recogido)
-                    coordenadax, coordenaday = actualizar_coordenadacliente(coordenadax, coordenaday)
-                    send_to_kafka(producer, kafka_topic_status, f"{taxi_id}#{mensaje}#{coordenadax}#{coordenaday}")
-                else:
-                    print(recogido)
-                    print(f"Ordenado == {ordenado} y llegado =={llegado}")
-                    if coordenadax == destinox and coordenaday == destinoy and ordenado== True and llegado == False:
-                        send_to_kafka(producer, kafka_topic_status, f"{taxi_id}#{mensaje}#{coordenadax}#{coordenaday}#destino")
-                        print("Servicio completado")
-                        llegado = True
-                        m = f"taxi#{taxi_id}#cliente#{cliente}#ha llegado a su destino"
-                        send_to_kafka(producer_servicio_completado, 'taxi_end2', m)
-                        send_to_kafka(producer_servicio_completado, 'taxi_end', m)
-                        if avanzado == False:
-                            avanzado = True
-                            coordenadax -= 1
-                        recogido = False
-                        ordenado = False  
-                    else:
-                        actualizar_coordenadadestino()
-                        send_to_kafka(producer, kafka_topic_status, f"{taxi_id}#{mensaje}#{coordenadax}#{coordenaday}#recogido")
-        except socket.error as e:
-            print(f"Error al recibir mensaje del Sensor: {e}")
-            break
+            self.producer.send(topic, value=message)
+            self.producer.flush()
+        except Exception as e:
+            print(f"Error al enviar mensaje a Kafka: {e}")
 
+    def update_client_coordinates(self, x, y):
+        if x < self.client_position[0]:
+            x+= 1
+        elif x > self.client_position[0]:
+            x -= 1
+        elif y < self.client_position[1]:
+            y += 1
+        elif y > self.client_position[1]:
+            y -= 1
+        print(f"{x, y}")
+        self.position = [x, y]
+        return x, y
 
-# Función para recibir instrucciones de EC_Central a través de Kafka
-def listen_to_kafka_commands(consumer, taxi_id):
-    global clientey, clientex, destinox, destinoy, ordenado, cliente, llegado
-    while True:
-        msg = consumer.poll(1.0)
-        if msg is None:
-            continue
-        if msg.error():
-            print(f"Error en Kafka: {msg.error()}")
-            continue
+    def updateCoordinates(self):     
+        if self.position[0] < self.goal_position[0]:
+            self.position[0] += 1
+        elif self.position[0] > self.goal_position[0]:
+            self.position[0] -= 1
+        elif self.position[1] < self.goal_position[1]:
+            self.position[1] += 1
+        elif self.position[1] > self.goal_position[1]:
+            self.position[1] -= 1
+        print(f"Actualizando posición: {self.position}")
 
-        command = msg.value().decode('utf-8')
-        print(f"Comando recibido de EC_Central: {command}")
-        # Procesar el comando recibido
-        partes = command.split("#")
-        if len(partes) == 7:
-            id = int(partes[1])
-            cx = int(partes[2])
-            cy = int(partes[3])
-            clix = int(partes[4])
-            cliy = int(partes[5])
-            cliente = partes[6]
-            taxi_idi = int(taxi_id)
-            if taxi_idi == id:
-                destinox = cx
-                destinoy = cy
-                clientex = clix
-                clientey = cliy
-                ordenado = True
-                llegado = False
-                print(f"TENGO QUE RECOGER AL CLIENTE EN {clientex}, {clientey} Y LUEGO IR A {destinox}, {destinoy}")
+    def connect_to_central(self):
+        print(f"Establecida conexión en [{client_socket.getsockname()}]")
+        
 
-
-
-def socket_check_id(client, taxi_id):
-    global coordenadax, coordenaday
-    print(f"Establecida conexión en [{client.getsockname()}]")
-
-    print("Envio al servidor: ", taxi_id)
-    send(taxi_id, client)
-    
-    while True:  #mientras el id no sea correcto
-        replay = client.recv(2048).decode(FORMAT)
-        patron = r"'x' ?: ?(\d+)[.,] ?'y' ?: ?(\d+)"
-        resultado = re.search(patron, replay)
-
-        if resultado:
-            # Extraer los valores
-            x = int(resultado.group(1))
-            y = int(resultado.group(2))
-
-            # Almacenar como tupla
-            coordenadax = x
-            coordenaday = y
-            print(f"Mi coordenada es {coordenadax}, {coordenaday}")
-        if replay == "El taxi no existe":
-            taxi_id = input("Introduce un ID valido: ")
-            send(taxi_id, client)  # Reenviar el mensaje
-        else:
-            break  # Rompe el bucle si el ID es válido
-
-    client.close()
-    return taxi_id
-
-# Función principal de conexión con EC_Central y autenticación por socket
-def main():
-    if len(sys.argv) != 8:
-        print("Uso: python EC_DE.py <IP_EC_Central> <PUERTO_EC_Central> <IP_KAFKA> <PUERTO_KAFKA> <IP_EC_S> <PUERTO_EC_S> <ID_TAXI>")
-        sys.exit(1)
-
-    ip_central = sys.argv[1]
-    puerto_central = int(sys.argv[2])
-    ip_kafka = sys.argv[3]
-    puerto_kafka = int(sys.argv[4])
-    ip_sensor = sys.argv[5]
-    puerto_sensor = int(sys.argv[6])
-    taxi_id = sys.argv[7]
-    #comunicación sockets cofirmación ID 
-
-    global recogido
-    recogido =False
-
-    ADDR = (ip_central, puerto_central)
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client.connect(ADDR)
-    taxi_id = socket_check_id(client, taxi_id)
-  
-    # Configuración de Kafka (usando Confluent Kafka)
-    kafka_broker = f'{ip_kafka}:{puerto_kafka}'  # IP y puerto de Kafka
-    kafka_topic_status = 'taxi_status'  # Tópico para enviar el estado del taxi
-    kafka_topic_commands = 'taxi_commands'  # Tópico para recibir comandos de EC_Central
-
-    # Inicializar el productor de Kafka
-    producer_conf = {'bootstrap.servers': kafka_broker}
-    producer = Producer(producer_conf)
-    producer_servicio_consumido = Producer(producer_conf)
-    
-    # Inicializar el consumidor de Kafka
-    consumer_conf = {
-        'bootstrap.servers': kafka_broker,
-        'group.id': f"taxi_{taxi_id}",
-        'auto.offset.reset': 'latest'
-    }
-    consumer = Consumer(consumer_conf)
-    consumer.subscribe([kafka_topic_commands])
- 
-
-
-    # Conexión con EC_S (Sensor)
-    try:
-        sensor_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sensor_socket.bind((ip_sensor, puerto_sensor))
-        sensor_socket.listen(1)
-        print(f"Esperando conexión del sensor en {ip_sensor}:{puerto_sensor}...")
-        connection, address = sensor_socket.accept()
-        print(f"Sensor conectado desde {address}")
-    except socket.error as e:
-        print(f"Error al conectarse al Sensor: {e}")
-        sys.exit(1)
-
-    # Crear hilos para manejar los mensajes del sensor y de Kafka
-    sensor_thread = threading.Thread(target=listen_to_sensor, args=(connection, producer, producer_servicio_consumido, kafka_topic_status, taxi_id))
-    sensor_thread.start()
-
-    kafka_thread = threading.Thread(target=listen_to_kafka_commands, args=(consumer, taxi_id))
-    kafka_thread.start()
-
-
-    # Mantener la ejecución para enviar mensajes de estado periódicamente
-    try:
+        print("Envio al servidor: ", self.taxi_id)
+        self.send(str(self.taxi_id), client_socket)
+        
         while True:
-            # Enviar mensaje de estado periódico a Kafka
-            #send_to_kafka(producer, kafka_topic_status, f"{taxi_id}#RUN#Taxi en movimiento")
-            time.sleep(5)  # Enviar estado cada 5 segundos
-    except KeyboardInterrupt:
-        print("Cerrando conexiones...")
-    finally:
-        sensor_socket.close()
-        producer.flush()
-        consumer.close()
+            response = client_socket.recv(2048).decode('utf-8')
+            pattern = r"'x' ?: ?(\d+)[.,] ?'y' ?: ?(\d+)"
+            aux = re.search(pattern, response)
+
+            if aux:
+                self.position = [int(aux.group(1)), int(aux.group(2))]
+                print(f"Mi coordenada es {self.position}")
+            if response == "ERROR taxi doesnt exist":
+                print("ERROR: id not on our database, try again ")
+                sys.exit(1)
+            else:
+                print(f"Taxi {self.taxi_id} autenticado correctamente.")
+                break
+        client_socket.close()
+
+    def listen_asignacion_kafka(self):
+        for msg in self.consumer:
+            if msg is None:
+                continue
+            command = msg.value
+            print(f"Command received from Central: {command}")
+            auxArr = command.split("#")
+
+            if len(auxArr) >= 2:
+                command_type = auxArr[0]
+                Tid = int(auxArr[1])
+                if Tid == self.taxi_id:
+                    if command_type == "RETURN_TO_BASE":
+                        self.return_to_base()
+                    elif command_type == "RESUME_OPERATIONS":
+                        self.resume_operations()
+                    elif command_type == "Taxi has to go to":
+                        Gx = int(auxArr[2])
+                        Gy = int(auxArr[3])
+                        cliX = int(auxArr[4])
+                        cliY = int(auxArr[5])
+                        self.client_id = auxArr[6]
+                        self.goal_position = [Gx, Gy]
+                        self.client_position = [cliX, cliY]
+                        self.ordered = True
+                        self.arrived = False
+                        print(f"RECOGER AL CLIENTE EN {self.client_position} PARA IR A {self.goal_position}")
+                    else:
+                        print(f"Unknown command: {command_type}")
+            else:
+                print(f"Received unrecognized message format: {command}")
+
+    def handle_sensors(self):
+        ok = False
+        while True:
+            try:
+                msg = conn.recv(1024).decode('utf-8')
+                if msg:
+                    if msg == "KO":
+                        self.status = "KO"
+                        self.send_to_kafka(TOPIC_TAXI_UPDATES,f"{self.taxi_id}#{msg}#{self.position[0]}#{self.position[1]}")
+                        continue
+                    if self.position == self.client_position and self.ordered:
+                        self.inTaxi = True
+                    
+                    if self.inTaxi == False:
+                        self.update_client_coordinates(self.position[0], self.position[1])
+                        self.send_to_kafka(TOPIC_TAXI_UPDATES, f"{self.taxi_id}#{msg}#{self.position[0]}#{self.position[1]}")
+                    else:
+                        print(f"Ordenado == {self.ordered} y arrived =={self.arrived}")
+                        if self.ordered and not self.arrived and self.position == self.goal_position:
+                            self.send_to_kafka(TOPIC_TAXI_UPDATES, f"{self.taxi_id}#{msg}#{self.position[0]}#{self.position[1]}#destino")
+                            print("Service completed")
+                            self.arrived = True
+                            aux = f"taxi#{self.taxi_id}#cliente#{self.client_id}#ha llegado a su destino"
+                            self.producer_end.send(TOPIC_TAXI_END_CENTRAL, value=aux)
+                            self.producer_end.send(TOPIC_TAXI_END_CLIENT, value=aux)
+
+                            if ok == False:
+                                ok = True
+                                self.position[0] -= 1
+                            self.inTaxi = False
+                            self.ordered = False
+                        
+                        else:
+                            self.updateCoordinates()
+                            self.send_to_kafka(TOPIC_TAXI_UPDATES,f"{self.taxi_id}#{msg}#{self.position[0]}#{self.position[1]}#recogido")
+            except socket.error as error:
+                print(f"Error al recibir mensaje del Sensor: {error}") 
+                break
+
+    def resume_operations(self):
+        print("Recibido comando RESUME_OPERATIONS. Reanudando operaciones y cambiando estado a 'OK'.")
+        self.status = 'OK'           # Cambiar el estado a 'OK'
+        self.available = True          # Marcar como disponible
+        self.returning_to_base = False
+        # Notificar a la central del cambio de estado
+        self.send_to_kafka(TOPIC_TAXI_UPDATES, f"{self.taxi_id}#OK#{self.position[0]}#{self.position[1]}")
+        print(f"Taxi {self.taxi_id} disponible para nuevos servicios.")
+
+    def return_to_base(self):
+        print("Recibido comando RETURN_TO_BASE. Regresando a la base.")
+        self.goal_position = [1, 1]       # Establecer la posición objetivo en (1,1)
+        self.available = False            # Marcar como no disponible
+        self.ordered = False              # No tiene orden asignada
+        self.client_id = ''               # Sin cliente asignado
+        self.returning_to_base = True     # Indicar que está regresando a la base
+        # Iniciar un hilo para supervisar la llegada a la base
+        monitor_thread = threading.Thread(target=self.monitor_return_to_base)
+        monitor_thread.start()
+
+    def monitor_return_to_base(self):
+        while self.returning_to_base:
+            if self.position == [1, 1]:
+                print("Taxi ha llegado a la base.")
+                self.status = 'KO'             # Cambiar el estado a 'KO'
+                self.returning_to_base = False # Dejar de supervisar
+                self.send_to_kafka(TOPIC_TAXI_UPDATES, f"{self.taxi_id}#KO#{self.position[0]}#{self.position[1]}")
+                print("Estado del taxi cambiado a 'KO'.")
+            else:
+                self.updateCoordinates()  # Mover el taxi hacia la base
+                self.send_to_kafka(TOPIC_TAXI_UPDATES, f"{self.taxi_id}#OK#{self.position[0]}#{self.position[1]}")
+            time.sleep(1)
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 9:
+        print("Usage: python digital_engine.py <EC_Central_IP> <EC_Central_Port> <Kafka_IP_Port> <EC_DE_Port> <Taxi_ID> <Registry_IP> <Registry_Port> <Cert_Path>")
+        sys.exit(1)
+    
+    registry_url = f"https://{sys.argv[6]}:{sys.argv[7]}"
+    cert_path = sys.argv[8]
+    
+    # Verify certificate exists
+    if not os.path.exists(cert_path):
+        print(f"Certificate not found at {cert_path}")
+        sys.exit(1)
+    
+    # Show initial registry menu with cert path
+    if not show_registry_menu(int(sys.argv[5]), registry_url, cert_path):
+        sys.exit(1)
+        
+    # Create Digital Engine instance with cert path
+    DE = DigitalEngine(
+        sys.argv[1], 
+        int(sys.argv[2]), 
+        sys.argv[3], 
+        sys.argv[4], 
+        int(sys.argv[5]),
+        sys.argv[6],
+        sys.argv[7],
+        cert_path
+    )
+    
+    DE.recogido = False
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect(DE.ec_central_addr)
+    DE.connect_to_central()
+
+    try:
+        DE.sensor_socket.bind((DE.de_addr[0], DE.de_addr[1]))
+        DE.sensor_socket.listen(1)
+        print("Data engine up and listening at ", DE.de_addr[0], " ", DE.de_addr[1])
+        conn, addr = DE.sensor_socket.accept()
+        print("NUEVA CONEXION: ", addr)
+    except socket.error as e:
+        print(f"Error connecting to sensors: {e}")
+        sys.exit(1)
+
+    sensor_thread = threading.Thread(target=DE.handle_sensors)
+    sensor_thread.start()
+
+    kafka_thread = threading.Thread(target=DE.listen_asignacion_kafka)
+    kafka_thread.start()
+
+    try:
+        while True:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        print("Closing Conn...")
+    finally:
+        DE.sensor_socket.close()
+        DE.producer.flush()
+        DE.consumer.close()

@@ -1,9 +1,22 @@
+
 import socket
 import sys
 import threading
 import time
 
-# Función para enviar mensaje al EC_DE
+#ARREGLAR QUE CUANDO HAGA UN KEYBOARD INTERRUPT 
+
+def wait_input(status):
+    print("Presione 'k' para KO, 'o' para OK")
+    while True:
+        user_input = input()
+        if user_input.lower() == 'k':
+            status['value'] = "KO"
+            print(f"Estado cambiado a {status['value']}")
+        elif user_input.lower() == 'o':
+            status['value'] = "OK"
+            print(f"Estado cambiado a {status['value']}")
+
 def send_message(client_socket, message):
     try:
         client_socket.sendall(message.encode('utf-8'))
@@ -11,50 +24,35 @@ def send_message(client_socket, message):
     except socket.error as e:
         print(f"Error al enviar mensaje: {e}")
 
-# Función que captura eventos de la terminal (barra espaciadora para cambiar estado)
-def listen_for_input(client_socket, estado):
-    while True:
-        user_input = input("")
-        if user_input == " ":
-            # Cambiar estado de OK a KO y viceversa
-            estado['value'] = "KO" if estado['value'] == "OK" else "OK"
-            print(f"Estado cambiado a {estado['value']}")
-
-# Función principal de conexión al EC_DE
-def main():
+def run():
     if len(sys.argv) != 3:
         print("Uso: python EC_S.py <IP_EC_DE> <PUERTO_EC_DE>")
         sys.exit(1)
 
-    # IP y puerto del EC_DE recibidos como argumentos
     ip_de = sys.argv[1]
-    puerto_de = int(sys.argv[2])
+    de_port = int(sys.argv[2])
 
-    # Crear socket para conectarse con el EC_DE
     try:
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_socket.connect((ip_de, puerto_de))
-        print(f"Conectado al EC_DE en {ip_de}:{puerto_de}")
+        client_socket.connect((ip_de, de_port))
+        print(f"Connected to Data Engine: {ip_de}:{de_port}")
     except socket.error as e:
-        print(f"Error al conectarse a EC_DE: {e}")
+        print(f"Error: {e}")
         sys.exit(1)
+    
+    status = {'value': 'OK'}
 
-    # Estado inicial del sensor: "OK"
-    estado = {'value': 'OK'}  # Usamos un diccionario para mutabilidad en hilos
-
-    # Crear un hilo para escuchar los eventos del sensor (entrada por teclado)
-    input_thread = threading.Thread(target=listen_for_input, args=(client_socket, estado))
+    input_thread = threading.Thread(target=wait_input, args=(status,))
     input_thread.start()
 
-    # Simulación constante de mensajes basados en el estado (OK/KO) cada segundo
     try:
         while True:
-            send_message(client_socket, estado['value'])  # Enviar el estado actual
-            time.sleep(1)  # Simula el envío del estado cada segundo
+            send_message(client_socket, status['value'])  
+            time.sleep(1)  
     except KeyboardInterrupt:
         print("Cerrando conexión...")
     finally:
         client_socket.close()
 
 if __name__ == "__main__":
-    main()
+    run()

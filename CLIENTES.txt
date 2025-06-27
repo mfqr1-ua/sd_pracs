@@ -1,0 +1,39 @@
+para el ENV:
+
+CTC:
+USAGE: EC_CTC.py <CTC_PORT> 
+
+python .\EC_CTC.py 6761
+
+CENTRAL:
+'USAGE: EC_Central.py <CENTRAL_PORT> <KAFKA_IP_PORT> <taxis.json> <CTC_IP:PORT> <WEB PORT>
+
+python .\EC_Central.py 5000 192.168.23.1:9092 taxis.json 192.168.23.1:6761 5001
+
+REGISTRY:
+"Usage: python EC_Registry.py <IP_CENTRAL> <PORT_CENTRAL> <PORT_REGISTRY>"
+
+python .\EC_Registry.py 192.168.23.1 5001 5002  
+
+TAXIS:
+"Usage: python digital_engine.py <EC_Central_IP> <EC_Central_Port> <Kafka_IP_Port> <EC_DE_Port> <Taxi_ID> <Registry_IP> <Registry_Port> <Cert_Path>
+
+python .\EC_DE.py 192.168.23.1 5000 127.0.0.1:9092 1488 1 192.168.23.1 5002 .\cert.pem    
+
+python .\EC_S.py 127.0.0.1 1488
+
+CLIENTES:
+
+python .\EC_Customer.py 127.0.0.1:9092 d .\Customer_services.json
+
+python .\EC_Customer.py 127.0.0.1:9092 b .\Customer_services2.json
+
+DOCKER:
+
+docker run -d -p 9092:9092 --name kafka apache/kafka:latest
+docker exec -it kafka /opt/kafka/bin/kafka-topics.sh --create --topic solicitudes-taxis --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1 
+docker exec -it kafka /opt/kafka/bin/kafka-topics.sh --create --topic respuestas-taxis --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1  
+docker exec -it kafka /opt/kafka/bin/kafka-topics.sh --create --topic asignacion-taxis --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1  
+docker exec -it kafka /opt/kafka/bin/kafka-topics.sh --create --topic taxi_updates --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1      
+docker exec -it kafka /opt/kafka/bin/kafka-topics.sh --create --topic taxi-end-central --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
+docker exec -it kafka /opt/kafka/bin/kafka-topics.sh --create --topic taxi-end-client --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1   
