@@ -1,0 +1,94 @@
+Guía de despliegue para la práctica EasyCab
+==========================================
+
+Este documento resume paso a paso cómo preparar y ejecutar el sistema en tres máquinas distintas. 
+Las IP utilizadas son solo un ejemplo. Sustituye cada una por las direcciones reales de tus equipos.
+
+Requisitos generales
+--------------------
+- Sistema operativo: Ubuntu o similar.
+- Python 3 y pip instalados (por ejemplo `sudo apt-get install python3 python3-pip`).
+- Acceso a internet para descargar Kafka y dependencias (o disponer de los paquetes previamente).
+
+Preparación en la **Máquina 1** (Kafka + EC_Central)
+--------------------------------------------------
+1. Crear un entorno virtual de Python y activarlo:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+2. Descargar y descomprimir Apache Kafka:
+   ```bash
+   wget https://archive.apache.org/dist/kafka/3.7.0/kafka_2.13-3.7.0.tgz
+   tar -xvzf kafka_2.13-3.7.0.tgz
+   cd kafka_2.13-3.7.0
+   ```
+3. Editar `config/server.properties` para fijar la IP/puerto de Kafka. Por ejemplo:
+   ```
+   listeners=PLAINTEXT://192.168.1.10:9092
+   advertised.listeners=PLAINTEXT://192.168.1.10:9092
+   ```
+4. Iniciar Zookeeper y el servidor de Kafka (en terminales separados o en segundo plano):
+   ```bash
+   bin/zookeeper-server-start.sh config/zookeeper.properties
+   bin/kafka-server-start.sh config/server.properties
+   ```
+5. Crear los temas necesarios para la práctica:
+   ```bash
+   bin/kafka-topics.sh --create --topic taxi_end2   --bootstrap-server 192.168.1.10:9092 --partitions 1 --replication-factor 1
+   bin/kafka-topics.sh --create --topic taxi_status --bootstrap-server 192.168.1.10:9092 --partitions 1 --replication-factor 1
+   bin/kafka-topics.sh --create --topic service     --bootstrap-server 192.168.1.10:9092 --partitions 1 --replication-factor 1
+   ```
+6. Volver a la carpeta del proyecto y ejecutar el componente central:
+   ```bash
+   cd ..  # directorio del proyecto
+   python3 EC_Central.py 2222 192.168.1.10:9092 taxis_db.json 192.168.1.10:6761 5001
+   ```
+   - `2222` es el puerto donde escuchará EC_Central.
+   - `192.168.1.10:9092` apunta al Kafka de esta misma máquina.
+   - `taxis_db.json` contiene la base de datos de taxis.
+   - `192.168.1.10:6761` es la IP:puerto del módulo CTC (si se usa).
+   - `5001` es el puerto para el servidor web del mapa.
+
+Preparación en la **Máquina 2** (Taxis: EC_DE y EC_S)
+-----------------------------------------------------
+1. Instalar las librerías necesarias (solo una vez):
+   ```bash
+   sudo apt-get install python3 python3-pip
+   pip3 install kafka-python pygame requests cryptography
+   ```
+2. Arrancar un Digital Engine (DE). Ejemplo:
+   ```bash
+   python3 EC_DE.py 192.168.1.10 2222 192.168.1.10:9092 8888 1 192.168.1.11 5002 cert.pem
+   ```
+   Parámetros:
+   - IP y puerto de EC_Central (`192.168.1.10 2222`).
+   - Dirección de Kafka (`192.168.1.10:9092`).
+   - Puerto para comunicarse con su Sensor (`8888`).
+   - Identificador del taxi (`1`).
+   - IP y puerto del EC_Registry (`192.168.1.11 5002`).
+   - Ruta al certificado TLS (`cert.pem`).
+3. En otra terminal de la misma máquina, iniciar el Sensor correspondiente:
+   ```bash
+   python3 EC_S.py 127.0.0.1 8888
+   ```
+   (IP y puerto deben coincidir con los usados por el DE.)
+
+Preparación en la **Máquina 3** (Clientes)
+------------------------------------------
+1. Igualmente, instalar Python y las dependencias necesarias:
+   ```bash
+   sudo apt-get install python3 python3-pip
+   pip3 install kafka-python
+   ```
+2. Ejecutar los clientes indicando la IP:puerto de Kafka y el identificador del cliente. Por ejemplo:
+   ```bash
+   python3 EC_Customer.py 192.168.1.10:9092 a Customer_services.json
+   ```
+   Donde `Customer_services.json` define las localizaciones a las que desea ir el cliente.
+
+Notas adicionales
+-----------------
+- Asegúrate de que todas las máquinas pueden comunicarse entre sí (puertos abiertos en el firewall).
+- Puedes ejecutar varios taxis y clientes repitiendo los pasos con IDs diferentes y puertos libres.
+- Si deseas utilizar el registro (`EC_Registry.py`) o el control de tráfico (`EC_CTC.py`), sigue las indicaciones de uso que aparecen al inicio de cada script.
